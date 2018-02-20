@@ -32,16 +32,19 @@ let empty = fun x -> failwith (Printf.sprintf "Undefined variable %s" x)
 *)
 let update x v s = fun y -> if x = y then v else s y
 
-(* An example of a non-trivial state: *)                                                   
+(* An example of a non-trivial state: *)
 let s = update "x" 1 @@ update "y" 2 @@ update "z" 3 @@ update "t" 4 empty
 
 (* Some testing; comment this definition out when submitting the solution. *)
-let _ =
+(* let _ =
   List.iter
     (fun x ->
        try  Printf.printf "%s=%d\n" x @@ s x
        with Failure s -> Printf.printf "%s\n" s
-    ) ["x"; "a"; "y"; "z"; "t"; "b"]
+    ) ["x"; "a"; "y"; "z"; "t"; "b"] *)
+
+let toBool value = value <> 0;;
+let toInt value = if value then 1 else 0;;
 
 (* Expression evaluator
 
@@ -50,5 +53,25 @@ let _ =
    Takes a state and an expression, and returns the value of the expression in 
    the given state.
 *)
-let eval = failwith "Not implemented yet"
-                    
+let rec eval state expression = match expression with
+  | Const value -> value
+  | Var name -> state name
+  | Binop(operation, left, right) ->
+    let x = eval state left in
+    let y = eval state right in
+    match operation with
+      | "!!" -> toInt (toBool x || toBool y)
+      | "&&" -> toInt (toBool x && toBool y)
+      | "==" -> toInt (x == y)
+      | "!=" -> toInt (x <> y)
+      | "<=" -> toInt (x <= y)
+      | "<"  -> toInt (x < y)
+      | ">=" -> toInt (x >= y)
+      | ">"  -> toInt (x > y)
+      | "+"  -> x + y
+      | "-"  -> x - y
+      | "*"  -> x * y
+      | "/"  -> x / y
+      | "%"  -> x mod y
+      | _    -> failwith (Printf.sprintf "Unsuppported binary operator %s" operation);;
+                      
