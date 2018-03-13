@@ -73,6 +73,43 @@ let show instr =
 (* Opening stack machine to use instructions without fully qualified names *)
 open SM
 
+let construct_mov x y = match x, y with
+  | M _, S _ | S _, S _ -> [Mov (x, edx); Mov (edx, y)]
+  | _, _                -> [Mov (x, y)]
+
+let logic_operation operation x y = [Mov (y, edx); Binop (operation, x, edx)]
+
+let rec create_binary_operation operation x y = match operation with
+  | "!!"  -> (logic_operation "!!" x y) @ [Mov (L 0, eax); Set ("nz", "%al")], eax
+  | "&&"  ->
+    let commands_x, register_x = create_binary_operation "!=" x (L 0) in
+    let commands_y, register_y = create_binary_operation "!=" y (L 0) in
+    commands_x @ [Mov (register_x, x)] @ commands_y @ [Mov (register_y, y)] @ (logic_operation "&&" x y) @ [Mov (L 0, eax); Set ("nz", "%al")], eax
+  | "==" -> (logic_operation "cmp" x y) @ [Mov (L 0, eax); Set ("e", "%al")], eax
+  | "!=" -> (logic_operation "cmp" x y) @ [Mov (L 0, eax); Set ("ne", "%al")], eax
+  | "<=" -> (logic_operation "cmp" x y) @ [Mov (L 0, eax); Set ("ge", "%al")], eax
+  | "<"  -> (logic_operation "cmp" x y) @ [Mov (L 0, eax); Set ("g", "%al")], eax
+  | ">=" -> (logic_operation "cmp" x y) @ [Mov (L 0, eax); Set ("le", "%al")], eax
+  | ">"  -> (logic_operation "cmp" x y) @ [Mov (L 0, eax); Set ("l", "%al")], eax
+  | "+"  -> [Mov (x, eax); Binop ("+", y, eax)], eax
+  | "-"  -> [Mov (x, eax); Binop ("-", y, eax)], eax
+  | "*"  -> [Mov (x, eax); Binop ("*", y, eax)], eax
+  | "/"  -> [Mov (x, eax); Cltd; IDiv y], eax
+  | "%"  -> [Mov (x, eax); Cltd; IDiv y], edx
+  | _ -> failwith (Printf.sprintf "Unsupported binary operator %s" operation);;
+
+let rec update_env env instruction = match instruction with
+  | CONST c         -> let x, env = env#allocate in (env, construct_mov (L c) x)
+  | BINOP operation ->
+    let x, y, env = env#pop2 in
+    let e, env = env#allocate in
+    let operations, register = create_binary_operation operation y x in
+    (env, operations @ (construct_mov register e))
+  | READ            -> let e, env = env#allocate in (env, [Call "Lread"] @ construct_mov eax e)
+  | WRITE           -> let e, env = env#pop in (env, [Push e; Call "Lwrite"; Pop edx])
+  | LD x            -> let e, env = env#allocate in (env, construct_mov (M (env#loc x)) e)
+  | ST x            -> let e, env = (env#global x)#pop in (env, construct_mov e (M (env#loc x)));;
+
 (* Symbolic stack machine evaluator
 
      compile : env -> prg -> env * instr list
@@ -80,7 +117,12 @@ open SM
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-let compile env code = failwith "Not yet implemented"
+let rec compile env code = match code with
+  | []                  -> (env, [])
+  | instruction :: rest ->
+    let env', operations = update_env env instruction in
+    let env'', operations' = compile env' rest in
+    (env'', operations @ operations');;
 
 (* A set of strings *)           
 module S = Set.Make (String)
