@@ -79,6 +79,15 @@ let show instr =
 (* Opening stack machine to use instructions without fully qualified names *)
 open SM
 
+let suffix operation = match operation with
+  | ">"  -> "g"
+  | ">=" -> "ge"
+  | "<"  -> "l"
+  | "<=" -> "le"
+  | "==" -> "e"
+  | "!=" -> "ne"
+  | _ -> failwith "unknown comparison operator"
+
 (* Symbolic stack machine evaluator
 
      compile : env -> prg -> env * instr list
@@ -86,7 +95,52 @@ open SM
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-let compile env code = failwith "Not yet implemented"
+let rec compile env = function
+  | [] -> env, []
+  | instr :: code' -> 
+    let env, asm = 
+      let mov r1 r2 = match r1, r2 with
+          | R _, _ 
+          | _, R _ -> [Mov(r1, r2)]
+          | _, _ -> [Mov (r1, eax); Mov (eax, r2)] in
+      match instr with
+        | CONST n -> 
+          let s, env = env#allocate in 
+          env, [Mov (L n, s)]  
+        | WRITE -> 
+          let s, env = env#pop in 
+          env, [Push s; Call "Lwrite"; Pop eax]
+        | LD x -> 
+          let s, env = (env#global x)#allocate in 
+          env, mov (M env#loc x) s
+        | ST x -> 
+          let s, env = (env#global x)#pop in 
+          env, mov s (M env#loc x)
+        | READ -> 
+          let s, env = env#allocate in 
+          env, [Call "Lread"; Mov (eax, s)]
+        | LABEL s -> env, [Label s]
+        | JMP l -> env, [Jmp l]
+        | CJMP (s, l) ->
+              let x, env = env#pop in
+              env, [Binop ("cmp", L 0, x); CJmp  (s, l)]
+        | BINOP operation -> 
+          let x, y, env = env#pop2 in 
+          let s, env = env#allocate in 
+          env, match operation with
+            | "+" | "-" | "*" -> 
+              [Mov (y, eax); Binop (operation, x, eax); Mov (eax, s)]
+            | ">" | ">=" | "<" | "<=" | "==" | "!=" -> 
+              [Mov (y, eax); Binop ("^", edx, edx); Binop ("cmp", x, eax); Set (suffix operation, "%dl"); Mov (edx, s)]
+            | "!!" | "&&" -> 
+              [Binop ("^", eax, eax); Binop ("^", edx, edx); Binop ("cmp", L 0, x); Set ("nz", "%al"); 
+                Binop ("cmp", L 0, y); Set ("nz", "%dl"); Binop (operation, eax, edx); Mov (edx, s)]
+            | "/" -> [Mov (y, eax); Cltd; IDiv x; Mov (eax, s)]
+            | "%" -> [Mov (y, eax); Cltd; IDiv x; Mov (edx, s)]
+        | _ -> failwith "Not yet supported"
+    in
+    let env, asm' = compile env code' in 
+    env, asm @ asm'
 
 (* A set of strings *)           
 module S = Set.Make (String)

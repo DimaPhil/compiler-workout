@@ -37,6 +37,25 @@ module Expr =
     *)
     let update x v s = fun y -> if x = y then v else s y
 
+    let toBool value = value <> 0;;
+    let toInt value = if value then 1 else 0;;
+
+    let calculateExpression operation x y = match operation with
+      | "!!" -> toInt (toBool x || toBool y)
+      | "&&" -> toInt (toBool x && toBool y)
+      | "==" -> toInt (x == y)
+      | "!=" -> toInt (x <> y)
+      | "<=" -> toInt (x <= y)
+      | "<"  -> toInt (x < y)
+      | ">=" -> toInt (x >= y)
+      | ">"  -> toInt (x > y)
+      | "+"  -> x + y
+      | "-"  -> x - y
+      | "*"  -> x * y
+      | "/"  -> x / y
+      | "%"  -> x mod y
+      | _    -> failwith (Printf.sprintf "Unsupported binary operator %s" operation);;
+
     (* Expression evaluator
 
           val eval : state -> t -> int
@@ -44,7 +63,16 @@ module Expr =
        Takes a state and an expression, and returns the value of the expression in 
        the given state.
     *)                                                       
-    let eval st expr = failwith "Not yet implemented"
+    let rec eval state expression = match expression with
+      | Const value -> value
+      | Var name -> state name
+      | Binop(operation, left, right) ->
+        let x = eval state left in
+        let y = eval state right in
+        calculateExpression operation x y    
+
+    let identity x = x
+    let make_operation operation = (ostap ($(operation)), fun x y -> Binop (operation, x, y))
 
     (* Expression parser. You can use the following terminals:
 
@@ -52,8 +80,20 @@ module Expr =
          DECIMAL --- a decimal constant [0-9]+ as a string
                                                                                                                   
     *)
-    ostap (                                      
-      parse: empty {failwith "Not yet implemented"}
+    ostap (
+      parse: expression;
+      expression:
+        !(Ostap.Util.expr identity
+          [|
+            `Lefta, [make_operation "!!"];
+            `Lefta, [make_operation "&&"];
+            `Nona,  [make_operation "<="; make_operation ">="; make_operation "<"; make_operation ">"; make_operation "=="; make_operation "!="];
+            `Lefta, [make_operation "+"; make_operation "-"];
+            `Lefta, [make_operation "*"; make_operation "/"; make_operation "%"]
+          |]
+          operations
+        );
+      operations: x:IDENT {Var x} | n:DECIMAL {Const n} | -"(" expression -")"
     )
     
   end
@@ -71,7 +111,7 @@ module Stmt =
     (* empty statement                  *) | Skip
     (* conditional                      *) | If     of Expr.t * t * t
     (* loop with a pre-condition        *) | While  of Expr.t * t
-    (* loop with a post-condition       *) (* add yourself *)  with show
+    (* loop with a post-condition       *) | Until of t * Expr.t with show
                                                                     
     (* The type of configuration: a state, an input stream, an output stream *)
     type config = Expr.state * int list * int list 
@@ -82,11 +122,46 @@ module Stmt =
 
        Takes a configuration and a statement, and returns another configuration
     *)
-    let rec eval conf stmt = failwith "Not yet implemented"
+    let rec eval ((st, i, o) as conf) stmt = match stmt with
+      | Read    x       -> (match i with z::i' -> (Expr.update x z st, i', o) | _ -> failwith "Unexpected end of input")
+      | Write   e       -> (st, i, o @ [Expr.eval st e])
+      | Assign (x, e)   -> (Expr.update x (Expr.eval st e) st, i, o)
+      | Seq    (s1, s2) -> eval (eval conf s1) s2
+      | Skip            -> conf 
+      | If (cond, t, e) -> eval conf (if (Expr.eval st cond) <> 0 then t else e)
+      | While (cond, body) -> (if (Expr.eval st cond) = 0 then conf else eval (eval conf body) stmt)
+      | Until (body, cond) -> 
+        let (st, i, o)  = eval conf stmt in 
+          if (Expr.eval st cond) = 0 then eval (st, i, o) stmt else (st, i, o)
+                          
+    let rec parseElifs elifs els =  match elifs with
+      | [] -> els
+      | (cond, body)::elifs' -> If (cond, body, parseElifs elifs' els)
                                
     (* Statement parser *)
     ostap (
-      parse: empty {failwith "Not yet implemented"}
+      parse:
+        s:stmt ";" ss:parse {Seq (s, ss)}
+      | stmt;
+      stmt:
+        %"read" "(" x:IDENT ")"          {Read x}
+      | %"write" "(" e:!(Expr.parse) ")" {Write e}
+      | x:IDENT ":=" e:!(Expr.parse)    {Assign (x, e)}
+      | %"skip" {Skip}
+      | %"if" cond:!(Expr.parse) %"then" th:parse 
+        elif:(%"elif" !(Expr.parse) %"then" parse)*
+        els:(%"else" parse)?
+        %"fi" { 
+        If (
+            cond,
+            th, 
+            match els with
+              | None -> parseElifs elif Skip
+              | Some body -> parseElifs elif body
+          )}
+      | %"while" cond: !(Expr.parse) %"do" body:parse %"od"  { While (cond, body) }
+      | %"repeat" body:parse %"until" cond: !(Expr.parse)    { Until (body, cond) }
+      | %"for" init:parse "," cond:!(Expr.parse) "," inc:parse %"do" body:parse %"od" { Seq (init, While (cond, Seq (body, inc))) } 
     )
       
   end
