@@ -32,8 +32,8 @@ type config = int list * Stmt.config
 let rec eval env ((stack, ((st, i, o) as c)) as conf) = function
   | [] -> conf
   | insn :: prg' ->
-       (match insn wsith
-          | BINOP op -> let y::x::stack' = stack in eval env (Expr.calculateExpression operation x y :: stack', c) prg'
+       (match insn with
+          | BINOP op -> let y::x::stack' = stack in eval env (Expr.calculateExpression op x y :: stack', c) prg'
           | READ     -> let z::i' = i     in eval env (z::stack, (st, i', o)) prg'
           | WRITE    -> let z::stack' = stack in eval env (stack', (st, i, o @ [z])) prg'
           | CONST i  -> eval env (i::stack, c) prg'
