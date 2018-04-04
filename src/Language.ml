@@ -6,6 +6,7 @@ open GT
 (* Opening a library for combinator-based syntax analysis *)
 open Ostap
 open Combinators
+open List
                          
 (* States *)
 module State =
@@ -15,21 +16,24 @@ module State =
     type t = {g : string -> int; l : string -> int; scope : string list}
 
     (* Empty state *)
-    let empty = failwith "Not implemented"
+    let undefined x = failwith (Printf.sprintf "Variable %s is undefined" x)
+    let empty = {g = undefined; l = undefined; scope = []}
 
     (* Update: non-destructively "modifies" the state s by binding the variable x 
        to value v and returns the new state w.r.t. a scope
     *)
-    let update x v s = failwith "Not implemented"
-                                
+    let update x v s = 
+      let update' x v sf = fun q -> if q = x then v else sf q in 
+      if mem x s.scope then {g = s.g; l = update' x v s.l; scope = s.scope} else {g = update' x v s.g; l = s.l; scope = s.scope}
+
     (* Evals a variable in a state w.r.t. a scope *)
-    let eval s x = failwith "Not implemented" 
+    let eval s x = if mem x s.scope then s.l x else s.g x
 
     (* Creates a new scope, based on a given state *)
-    let enter st xs = failwith "Not implemented"
+    let enter st xs = {g = st.g; l = undefined; scope = xs}
 
     (* Drops a scope *)
-    let leave st st' = failwith "Not implemented"
+    let leave st st' = {g = st.g; l = st'.l; scope = st'.scope}
 
   end
     
@@ -53,14 +57,42 @@ module Expr =
         *, /, %              --- multiplication, division, reminder
     *)
       
+    let toBool value = value <> 0;;
+    let toInt value = if value then 1 else 0;;
+
+    let calculateExpression operation x y = match operation with
+      | "!!" -> toInt (toBool x || toBool y)
+      | "&&" -> toInt (toBool x && toBool y)
+      | "==" -> toInt (x == y)
+      | "!=" -> toInt (x <> y)
+      | "<=" -> toInt (x <= y)
+      | "<"  -> toInt (x < y)
+      | ">=" -> toInt (x >= y)
+      | ">"  -> toInt (x > y)
+      | "+"  -> x + y
+      | "-"  -> x - y
+      | "*"  -> x * y
+      | "/"  -> x / y
+      | "%"  -> x mod y
+      | _    -> failwith (Printf.sprintf "Unsupported binary operator %s" operation);;
+
     (* Expression evaluator
 
           val eval : state -> t -> int
  
        Takes a state and an expression, and returns the value of the expression in 
        the given state.
-    *)                                                       
-    let eval st expr = failwith "Not implemented"      
+    *)
+    let rec eval state expression = match expression with
+      | Const value -> value
+      | Var name -> State.eval state name
+      | Binop(operation, left, right) ->
+        let x = eval state left in
+        let y = eval state right in
+        calculateExpression operation x y
+
+    let identity x = x
+    let make_operation operation = (ostap ($(operation)), fun x y -> Binop (operation, x, y))
 
     (* Expression parser. You can use the following terminals:
 
@@ -69,9 +101,26 @@ module Expr =
                                                                                                                   
     *)
     ostap (                                      
-      parse: empty {failwith "Not implemented"}
-    )
-    
+      parse:
+        !(Ostap.Util.expr identity
+           (Array.map (fun (a, s) -> a, 
+                             List.map  (fun s -> ostap(- $(s)), (fun x y -> Binop (s, x, y))) s
+                          ) 
+                [|                
+                    `Lefta, ["!!"];
+                    `Lefta, ["&&"];
+                    `Nona , ["=="; "!="; "<="; "<"; ">="; ">"];
+                    `Lefta, ["+" ; "-"];
+                    `Lefta, ["*" ; "/"; "%"];
+                |] 
+           )
+           primary);
+        
+        primary:
+          n:DECIMAL {Const n}
+        | x:IDENT   {Var x}
+        | -"(" parse -")"
+   )    
   end
                     
 (* Simple statements: syntax and sematics *)
@@ -104,13 +153,56 @@ module Stmt =
 
        which returns a list of formal parameters, local variables, and a body for given definition
     *)
-    let eval env ((st, i, o) as conf) stmt = failwith "Not implemented"
-                                
+     let rec eval env ((state, i, o) as conf) statement =
+      match statement with
+        | Read    x           -> (match i with z::i' -> (State.update x z state, i', o) | _ -> failwith "Expected symbol, but end of input found")
+        | Write   e           -> (state, i, o @ [Expr.eval state e])
+        | Assign (x, e)       -> (State.update x (Expr.eval state e) state, i, o)
+        | Seq    (s1, s2)     -> eval env (eval env conf s1) s2
+        | Skip                -> conf 
+        | If (cond, t, e)     -> eval env conf (if (Expr.eval state cond) <> 0 then t else e)
+        | While (cond, body)  -> (if (Expr.eval state cond) = 0 then conf else eval env (eval env conf body) statement)
+        | Repeat (body, cond) -> 
+          let (state', i, o)  = eval env conf statement in 
+            if (Expr.eval state cond) = 0 then eval env (state', i, o) statement else (state', i, o)
+        | Call (f, args) -> 
+          let params, locals, body = env#definition f in
+          let evaluatedArgs = combine params (map (Expr.eval state) args) in 
+          let initState = State.enter state (params @ locals) in 
+          let state = fold_left (fun state' (x, v) -> State.update x v state') initState evaluatedArgs in
+          let resST, resI, resO = eval env (state, i, o) body in
+          (State.leave resST state, resI, resO)
+                          
+
+    let rec parseElifs elifs els =  match elifs with
+      | [] -> els
+      | (cond, body)::elifs' -> If (cond, body, parseElifs elifs' els)
+    
     (* Statement parser *)
     ostap (
-      parse: empty {failwith "Not implemented"}
+      parse:
+        s:stmt ";" ss:parse {Seq (s, ss)}
+      | stmt;
+      stmt:
+        %"read" "(" x:IDENT ")"          {Read x}
+      | %"write" "(" e:!(Expr.parse) ")" {Write e}
+      | x:IDENT ":=" e:!(Expr.parse)    {Assign (x, e)}
+      | %"skip" {Skip}
+      | %"if" cond:!(Expr.parse) %"then" th:parse 
+        elif:(%"elif" !(Expr.parse) %"then" parse)*
+        els:(%"else" parse)?
+        %"fi" { 
+        If (
+            cond,
+            th, 
+            match els with
+              | None -> parseElifs elif Skip
+              | Some body -> parseElifs elif body
+          )}
+      | %"while" cond: !(Expr.parse) %"do" body:parse %"od"  { While (cond, body) }
+      | %"repeat" body:parse %"until" cond: !(Expr.parse)    { Repeat (body, cond) }
+      | %"for" init:parse "," cond:!(Expr.parse) "," inc:parse %"do" body:parse %"od" { Seq (init, While (cond, Seq (body, inc))) }
     )
-      
   end
 
 (* Function and procedure definitions *)
@@ -121,9 +213,12 @@ module Definition =
     type t = string * (string list * string list * Stmt.t)
 
     ostap (
-      parse: empty {failwith "Not implemented"}
+      arg: IDENT;
+      parse: %"fun" name:IDENT "(" args: !(Util.list0 arg) ")"
+        locals: (%"local" !(Util.list arg))?
+        "{" body: !(Stmt.parse) "}" 
+        { (name, (args, (match locals with None -> [] | Some l -> l), body))}    
     )
-
   end
     
 (* The top-level definitions *)
@@ -137,7 +232,12 @@ type t = Definition.t list * Stmt.t
 
    Takes a program and its input stream, and returns the output stream
 *)
-let eval (defs, body) i = failwith "Not implemented"
+let eval (defs, body) i = 
+  let module FMap = Map.Make(String) in
+  let definitions = fold_left (fun m ((name, _) as def) -> FMap.add name def m) FMap.empty defs in
+  let env = (object method definition name = snd (FMap.find name definitions) end) in
+  let _, _, output = Stmt.eval env (State.empty, i, []) body
+  in output
                                    
 (* Top-level parser *)
-let parse = failwith "Not implemented"
+let parse = ostap (!(Definition.parse)* !(Stmt.parse))
