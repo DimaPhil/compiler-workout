@@ -264,7 +264,9 @@ module S = Set.Make (String)
 module M = Map.Make (String)
 
 (* Environment implementation *)
-let make_assoc l = List.combine l (List.init (List.length l) (fun x -> x))
+let rec listInit i n f = if i >= n then [] else (f i) :: (listInit (i + 1) n f)
+
+let make_assoc l = List.combine l (listInit 0 (List.length l) (fun x -> x))
                      
 class env =
   object (self)
